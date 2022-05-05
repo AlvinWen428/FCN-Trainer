@@ -1,4 +1,5 @@
 import os
+from tqdm import tqdm
 
 import torch
 import torch.nn as nn
@@ -50,7 +51,8 @@ def load_dataset(dataset):
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        pin_memory=True)
 
     # Load the validation set as tensors
     val_set = dataset(
@@ -62,7 +64,8 @@ def load_dataset(dataset):
         val_set,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        pin_memory=True)
 
     # Load the test set as tensors
     test_set = dataset(
@@ -74,7 +77,8 @@ def load_dataset(dataset):
         test_set,
         batch_size=args.batch_size,
         shuffle=False,
-        num_workers=args.workers)
+        num_workers=args.workers,
+        pin_memory=True)
 
     # Get encoding between pixel valus in label images and RGB colors
     class_encoding = train_set.color_encoding
@@ -182,7 +186,7 @@ def train(train_loader, val_loader, class_weights, class_encoding):
     print()
     train = Train(model, train_loader, optimizer, criterion, metric, device)
     val = Test(model, val_loader, criterion, metric, device)
-    for epoch in range(start_epoch, args.epochs):
+    for epoch in tqdm(range(start_epoch, args.epochs)):
         print(">>>> [Epoch: {0:d}] Training".format(epoch))
 
         epoch_loss, (iou, miou) = train.run_epoch(args.print_step)
