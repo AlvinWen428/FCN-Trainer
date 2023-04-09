@@ -22,6 +22,13 @@ def get_arguments():
         help=("The model found in \"--save-dir/--name/\" and filename "
               "\"--name.h5\" is loaded."))
 
+    parser.add_argument(
+        "--model-name",
+        type=str,
+        default='enet',
+        help='enet/fcn'
+    )
+
     # Hyperparameters
     parser.add_argument(
         "--batch-size",
@@ -91,6 +98,10 @@ def get_arguments():
         dest='ignore_unlabeled',
         action='store_false',
         help="The unlabeled class is not ignored.")
+    parser.add_argument(
+        "--regression",
+        action="store_true",
+        help="Whether make it a regression task, with MSE loss and gaussian blurred labels")
 
     # Settings
     parser.add_argument(

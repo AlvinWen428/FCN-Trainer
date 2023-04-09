@@ -22,9 +22,10 @@ class IoU(metric.Metric):
     when computing the IoU. Can be an int, or any iterable of ints.
     """
 
-    def __init__(self, num_classes, normalized=False, ignore_index=None):
+    def __init__(self, num_classes, normalized=False, ignore_index=None, is_regression=False):
         super().__init__()
         self.conf_metric = ConfusionMatrix(num_classes, normalized)
+        self.is_regression = is_regression
 
         if ignore_index is None:
             self.ignore_index = None
@@ -58,6 +59,9 @@ class IoU(metric.Metric):
             "predictions must be of dimension (N, H, W) or (N, K, H, W)"
         assert target.dim() == 3 or target.dim() == 4, \
             "targets must be of dimension (N, H, W) or (N, K, H, W)"
+
+        if self.is_regression:
+            predicted = torch.exp(-torch.exp(predicted))
 
         # If the tensor is in categorical format convert it to integer format
         if predicted.dim() == 4:

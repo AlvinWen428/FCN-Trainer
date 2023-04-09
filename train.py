@@ -14,11 +14,12 @@ class Train:
 
     """
 
-    def __init__(self, model, data_loader, optim, criterion, metric, device):
+    def __init__(self, model, data_loader, optim, criterion, is_regression, metric, device):
         self.model = model
         self.data_loader = data_loader
         self.optim = optim
         self.criterion = criterion
+        self.is_regression = is_regression
         self.metric = metric
         self.device = device
 
@@ -39,12 +40,16 @@ class Train:
             # Get the inputs and labels
             inputs = batch_data[0].to(self.device)
             labels = batch_data[1].to(self.device)
+            regression_labels = batch_data[2].to(self.device)
 
             # Forward propagation
             outputs = self.model(inputs)
 
             # Loss computation
-            loss = self.criterion(outputs, labels)
+            if self.is_regression:
+                loss = self.criterion(outputs, regression_labels)
+            else:
+                loss = self.criterion(outputs, labels)
 
             # Backpropagation
             self.optim.zero_grad()

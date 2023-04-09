@@ -12,12 +12,16 @@ from PIL import Image
 
 import transforms as ext_transforms
 from models.enet import ENet
+from models.fcn import make_fcn
 from train import Train
 from test import Test
 from metric.iou import IoU
 from args import get_arguments
 from data.utils import enet_weighing, median_freq_balancing
 import utils
+
+torch.backends.cuda.matmul.allow_tf32 = False
+torch.backends.cudnn.allow_tf32 = False
 
 # Get the arguments
 args = get_arguments()
@@ -38,30 +42,36 @@ def load_dataset(dataset):
 
     label_transform = transforms.Compose([
         transforms.Resize((args.height, args.width), Image.NEAREST),
-        ext_transforms.PILToLongTensor()
+        ext_transforms.PILToLongTensor(),
+        ext_transforms.ToOnehotGaussianBlur(kernel_size=7, num_classes=dataset.num_classes)
     ])
 
     # Get selected dataset
     # Load the training set as tensors
-    train_set = dataset(
+    whole_train_set = dataset(
         args.dataset_dir,
         transform=image_transform,
         label_transform=label_transform)
+
+    # change the split ratio and do not use the original validation set,
+    # because I want to use it as the test set for conformal prediction
+    train_set, val_set, cal_set, _ = data.random_split(whole_train_set, [1800, 200, 600, len(whole_train_set) - 2600],
+                                                       generator=torch.Generator().manual_seed(0))
+
     train_loader = data.DataLoader(
         train_set,
         batch_size=args.batch_size,
         shuffle=True,
         num_workers=args.workers,
         pin_memory=True)
-
-    # Load the validation set as tensors
-    val_set = dataset(
-        args.dataset_dir,
-        mode='val',
-        transform=image_transform,
-        label_transform=label_transform)
     val_loader = data.DataLoader(
         val_set,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.workers,
+        pin_memory=True)
+    cal_loader = data.DataLoader(
+        cal_set,
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.workers,
@@ -81,7 +91,7 @@ def load_dataset(dataset):
         pin_memory=True)
 
     # Get encoding between pixel valus in label images and RGB colors
-    class_encoding = train_set.color_encoding
+    class_encoding = whole_train_set.color_encoding
 
     # Remove the road_marking class from the CamVid dataset as it's merged
     # with the road class
@@ -98,9 +108,9 @@ def load_dataset(dataset):
 
     # Get a batch of samples to display
     if args.mode.lower() == 'test':
-        images, labels = iter(test_loader).next()
+        images, labels, regression_labels = iter(test_loader).next()
     else:
-        images, labels = iter(train_loader).next()
+        images, labels, regression_labels = iter(train_loader).next()
     print("Image size:", images.size())
     print("Label size:", labels.size())
     print("Class-color encoding:", class_encoding)
@@ -136,24 +146,47 @@ def load_dataset(dataset):
 
     print("Class weights:", class_weights)
 
-    return (train_loader, val_loader,
+    return (train_loader, val_loader, cal_loader,
             test_loader), class_weights, class_encoding
 
 
-def train(train_loader, val_loader, class_weights, class_encoding):
+def train(model_name, train_loader, val_loader, class_weights, class_encoding, regression=False):
     print("\nTraining...\n")
 
     num_classes = len(class_encoding)
 
     # Intialize ENet
-    model = ENet(num_classes).to(device)
+    if model_name.lower() == 'enet':
+        model = ENet(num_classes).to(device)
+    elif model_name.lower() == 'fcn':
+        model = make_fcn(pretrained=True, img_shape=(args.height, args.width), num_classes=num_classes)
+        model = model.to(device)
+    else:
+        raise ValueError
     # Check if the network architecture is correct
     print(model)
 
     # We are going to use the CrossEntropyLoss loss function as it's most
     # frequentely used in classification problems with multiple classes which
     # fits the problem. This criterion  combines LogSoftMax and NLLLoss.
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    if regression:
+        class WeightedMSE(nn.Module):
+            def __init__(self, weight=None):
+                super(WeightedMSE, self).__init__()
+                if weight is not None:
+                    self.weight = weight / weight.sum()
+                else:
+                    self.weight = None
+            def forward(self, inputs, targets):
+                if self.weight is not None:
+                    mse = ((inputs - targets) ** 2).mean(dim=(0, 2, 3))  # (num_classes,)
+                    mse = (self.weight * mse).sum()
+                else:
+                    mse = ((inputs - targets) ** 2).mean()
+                return mse
+        criterion = WeightedMSE(weight=class_weights)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     # ENet authors used Adam as the optimizer
     optimizer = optim.Adam(
@@ -170,7 +203,7 @@ def train(train_loader, val_loader, class_weights, class_encoding):
         ignore_index = list(class_encoding).index('unlabeled')
     else:
         ignore_index = None
-    metric = IoU(num_classes, ignore_index=ignore_index)
+    metric = IoU(num_classes, ignore_index=ignore_index, is_regression=regression)
 
     # Optionally resume from a checkpoint
     if args.resume:
@@ -184,8 +217,8 @@ def train(train_loader, val_loader, class_weights, class_encoding):
 
     # Start Training
     print()
-    train = Train(model, train_loader, optimizer, criterion, metric, device)
-    val = Test(model, val_loader, criterion, metric, device)
+    train = Train(model, train_loader, optimizer, criterion, regression, metric, device)
+    val = Test(model, val_loader, criterion, regression, metric, device)
     for epoch in tqdm(range(start_epoch, args.epochs)):
         print(">>>> [Epoch: {0:d}] Training".format(epoch))
 
@@ -218,25 +251,42 @@ def train(train_loader, val_loader, class_weights, class_encoding):
     return model
 
 
-def test(model, test_loader, class_weights, class_encoding):
+def test(model, test_loader, class_weights, class_encoding, regression=False):
     print("\nTesting...\n")
 
     num_classes = len(class_encoding)
 
-    # We are going to use the CrossEntropyLoss loss function as it's most
-    # frequentely used in classification problems with multiple classes which
-    # fits the problem. This criterion  combines LogSoftMax and NLLLoss.
-    criterion = nn.CrossEntropyLoss(weight=class_weights)
+    if regression:
+        # Because we modify the segmentation problem into a regression task, we need to use this MSE loss.
+        class WeightedMSE(nn.Module):
+            def __init__(self, weight=None):
+                super(WeightedMSE, self).__init__()
+                if weight is not None:
+                    self.weight = weight / weight.sum()
+                else:
+                    self.weight = None
+
+            def forward(self, inputs, targets):
+                if self.weight is not None:
+                    mse = ((inputs - targets) ** 2).mean(dim=(0, 2, 3))  # (num_classes,)
+                    mse = (self.weight * mse).sum()
+                else:
+                    mse = ((inputs - targets) ** 2).mean()
+                return mse
+
+        criterion = WeightedMSE(weight=class_weights)
+    else:
+        criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     # Evaluation metric
     if args.ignore_unlabeled:
         ignore_index = list(class_encoding).index('unlabeled')
     else:
         ignore_index = None
-    metric = IoU(num_classes, ignore_index=ignore_index)
+    metric = IoU(num_classes, ignore_index=ignore_index, is_regression=regression)
 
     # Test the trained model on the test set
-    test = Test(model, test_loader, criterion, metric, device)
+    test = Test(model, test_loader, criterion, regression, metric, device)
 
     print(">>>> Running test dataset")
 
@@ -252,17 +302,20 @@ def test(model, test_loader, class_weights, class_encoding):
     # Show a batch of samples and labels
     if args.imshow_batch:
         print("A batch of predictions from the test set...")
-        images, _ = iter(test_loader).next()
-        predict(model, images, class_encoding)
+        images, _, _ = iter(test_loader).next()
+        predict(model, images, class_encoding, regression)
 
 
-def predict(model, images, class_encoding):
+def predict(model, images, class_encoding, is_regression):
     images = images.to(device)
 
     # Make predictions!
     model.eval()
     with torch.no_grad():
         predictions = model(images)
+
+    if is_regression:
+        predictions = torch.exp(-torch.exp(predictions))
 
     # Predictions is one-hot encoded with "num_classes" channels.
     # Convert it to a single int using the indices where the maximum (1) occurs
@@ -300,16 +353,22 @@ if __name__ == '__main__':
             args.dataset))
 
     loaders, w_class, class_encoding = load_dataset(dataset)
-    train_loader, val_loader, test_loader = loaders
+    train_loader, val_loader, cal_loader, test_loader = loaders
 
     if args.mode.lower() in {'train', 'full'}:
-        model = train(train_loader, val_loader, w_class, class_encoding)
+        model = train(args.model_name, train_loader, val_loader, w_class, class_encoding, args.regression)
 
     if args.mode.lower() in {'test', 'full'}:
         if args.mode.lower() == 'test':
             # Intialize a new ENet model
             num_classes = len(class_encoding)
-            model = ENet(num_classes).to(device)
+            if args.model_name.lower() == 'enet':
+                model = ENet(num_classes).to(device)
+            elif args.model_name.lower() == 'fcn':
+                model = make_fcn(pretrained=True, img_shape=(args.height, args.width), num_classes=num_classes)
+                model = model.to(device)
+            else:
+                raise ValueError
 
         # Initialize a optimizer just so we can retrieve the model from the
         # checkpoint

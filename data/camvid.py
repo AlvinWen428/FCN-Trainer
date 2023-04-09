@@ -36,6 +36,8 @@ class CamVid(data.Dataset):
     # Images extension
     img_extension = '.png'
 
+    num_classes = 12
+
     # Default encoding for pixel value, class name, and class color
     color_encoding = OrderedDict([
         ('sky', (128, 128, 128)),
@@ -125,9 +127,9 @@ class CamVid(data.Dataset):
             img = self.transform(img)
 
         if self.label_transform is not None:
-            label = self.label_transform(label)
+            label, regression_label = self.label_transform(label)
 
-        return img, label
+        return img, label, regression_label
 
     def __len__(self):
         """Returns the length of the dataset."""

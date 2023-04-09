@@ -111,7 +111,7 @@ def enet_weighing(dataloader, num_classes, c=1.02):
     """
     class_count = 0
     total = 0
-    for _, label in dataloader:
+    for _, label, _ in dataloader:
         label = label.cpu().numpy()
 
         # Flatten label
@@ -148,7 +148,7 @@ def median_freq_balancing(dataloader, num_classes):
     """
     class_count = 0
     total = 0
-    for _, label in dataloader:
+    for _, label, _ in dataloader:
         label = label.cpu().numpy()
 
         # Flatten label

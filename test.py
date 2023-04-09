@@ -16,10 +16,11 @@ class Test:
 
     """
 
-    def __init__(self, model, data_loader, criterion, metric, device):
+    def __init__(self, model, data_loader, criterion, is_regression, metric, device):
         self.model = model
         self.data_loader = data_loader
         self.criterion = criterion
+        self.is_regression = is_regression
         self.metric = metric
         self.device = device
 
@@ -40,13 +41,17 @@ class Test:
             # Get the inputs and labels
             inputs = batch_data[0].to(self.device)
             labels = batch_data[1].to(self.device)
+            regression_labels = batch_data[2].to(self.device)
 
             with torch.no_grad():
                 # Forward propagation
                 outputs = self.model(inputs)
 
                 # Loss computation
-                loss = self.criterion(outputs, labels)
+                if self.is_regression:
+                    loss = self.criterion(outputs, regression_labels)
+                else:
+                    loss = self.criterion(outputs, labels)
 
             # Keep track of loss for current epoch
             epoch_loss += loss.item()

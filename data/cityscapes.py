@@ -43,6 +43,8 @@ class Cityscapes(data.Dataset):
     new_classes = (0, 0, 0, 0, 0, 0, 0, 1, 2, 0, 0, 3, 4, 5, 0, 0, 0, 6, 0, 7,
                    8, 9, 10, 11, 12, 13, 14, 15, 16, 0, 0, 17, 18, 19, 0)
 
+    num_classes = 20
+
     # Default encoding for pixel value, class name, and class color
     color_encoding = OrderedDict([
             ('unlabeled', (0, 0, 0)),
@@ -145,9 +147,9 @@ class Cityscapes(data.Dataset):
             img = self.transform(img)
 
         if self.label_transform is not None:
-            label = self.label_transform(label)
+            label, regression_label = self.label_transform(label)
 
-        return img, label
+        return img, label, regression_label
 
     def __len__(self):
         """Returns the length of the dataset."""
